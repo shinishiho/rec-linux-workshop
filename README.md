@@ -12,6 +12,28 @@
 - Automation: Quickly create new users and copy game files with `deploy` and delete users and files with `cleanup`.
 - Embed a secret message: After completing the game's objectives, the user can obtain a secret message (each user can have a unique one).
 
+## Commands & Knowledge Covered in the Game
+
+During the Arisu Game, players will practice and learn the following Linux commands and concepts:
+
+- `echo`: Printing messages.
+- `touch`: Creating files.
+- `mkdir`: Creating directories.
+- `rm, rm -r`: Removing files and directories.
+- `ls, ls -a`: Listing files and hidden files in directories.
+- `cat`: Viewing the contents of files.
+- `cp, mv`: Copying or moving files.
+- `chmod`: Changing file permissions to make files readable or locked.
+- `top`: Listing running processes.
+- `ps, kill`: Listing running processes and terminating them by PID or name.
+- `find`: Searching for files or directories within the home directory.
+- `grep`: Filtering lines of text.
+- `nano`: Simple text editor.
+- `>`, `>>`: Output redirection, combining file parts or saving command output to files.
+- `|`: Piping, combining commands, pipe the output of one command to the input of another.
+- **Process and file permissions**: Understanding how processes can lock files and how to unlock them.
+- **Hidden files**: Recognizing and manipulating files that start with a dot (`.`).
+
 ## Requirements
 
 - Fish shell (I chose fish because it has autosuggestion by default)
