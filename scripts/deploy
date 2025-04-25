@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Check if script is run as root
+# Auto-elevate with sudo if not already root
 if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root. Please use sudo." >&2
-   exit 1
+   echo "Elevating with sudo..."
+   exec sudo "$0" "$@"
 fi
 
 # --- Function to encode a string to Base64 ---
@@ -11,9 +11,14 @@ encode_base64() {
   echo "$1" | base64
 }
 
-# --- Get user input ---
-read -p "Enter the new username: " new_username
-read -p "Enter the 3rd line secret string: " secret_string
+# --- Get user input from arguments ---
+if [ $# -lt 2 ]; then
+  echo "Usage: $0 <username> <secret_string>" >&2
+  exit 1
+fi
+new_username="$1"
+secret_string="$2"
+
 read -s -p "Enter the password for the new user: " user_password
 echo # Add a newline after the silent password input
 
@@ -21,6 +26,31 @@ echo # Add a newline after the silent password input
 if [ -z "$new_username" ] || [ -z "$secret_string" ] || [ -z "$user_password" ]; then
   echo "Error: All fields must be provided."
   exit 1
+fi
+
+# --- Copy assets to /tmp if not already present ---
+ASSETS_SRC_DIR="$(dirname "$0")/../assets"
+ASSETS_DST_DIR="/tmp"
+if [ -d "$ASSETS_SRC_DIR" ]; then
+  for asset in "$ASSETS_SRC_DIR"/*; do
+    asset_name="$(basename "$asset")"
+    dst_path="$ASSETS_DST_DIR/$asset_name"
+    if [ -d "$asset" ]; then
+      # If asset is a directory, copy recursively if not present
+      if [ ! -d "$dst_path" ]; then
+        cp -r "$asset" "$dst_path"
+        echo "Copied directory '$asset_name' to /tmp."
+      fi
+    else
+      # If asset is a file, copy if not present
+      if [ ! -f "$dst_path" ]; then
+        cp "$asset" "$dst_path"
+        echo "Copied file '$asset_name' to /tmp."
+      fi
+    fi
+  done
+else
+  echo "Warning: Assets source directory '$ASSETS_SRC_DIR' not found."
 fi
 
 # --- Create the new user and home directory ---
@@ -57,8 +87,8 @@ mkdir -p "$new_user_home/Documents" \
 
 echo "Created standard directories in $new_user_home"
 
-# --- Copy the ~/arisu file ---
-source_file="/home/w/arisugame/arisu"
+# --- Copy the arisu file from the repo root ---
+source_file="$(dirname "$0")/../arisu"
 destination_file="$new_user_home/arisu"
 
 if [ -f "$source_file" ]; then
@@ -74,13 +104,7 @@ if [ -f "$destination_file" ]; then
   encoded_secret=$(encode_base64 "$secret_string")
 
   # Use sed to replace the 3rd line
-  # -i allows inline editing
-  # '3s/BASE64_SECRET=".*"/BASE64_SECRET="'"$encoded_secret"'"/'
-  #   ^  ^ ^           ^                         ^            ^
-  #  Line to modify  s/ Search pattern          / Replacement /
-  # '.*' matches anything between the quotes
-  # "'"$encoded_secret"'" ensures the encoded string is properly quoted
-  sed -i '3s/BASE64_SECRET=".*"/BASE64_SECRET="'"$encoded_secret"'"/' "$destination_file"
+  sed -i '3s/BASE64_SECRET=".*"/BASE64_SECRET="'$encoded_secret'"/' "$destination_file"
   if [ $? -eq 0 ]; then
     echo "Updated the 3rd line of '$destination_file' with the encoded secret."
   else
@@ -89,7 +113,6 @@ if [ -f "$destination_file" ]; then
 
   chown -R "$new_username:$new_username" "$new_user_home"
   echo "Set ownership of '$new_user_home' and its contents to '$new_username'."
-
 
   chattr +i "$destination_file"
   if [ $? -eq 0 ]; then

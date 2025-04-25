@@ -90,7 +90,7 @@ display_gif_animation() {
     local frame_y_pos="$2"  # Get y position from argument
     
     # Get list of frame files
-    local frame_files=("$frames_dir"/cropped_processed_frame_*.png)
+    local frame_files=("$frames_dir"/frame_*.png)
     
     # Sort frames numerically
     IFS=$'\n' frame_files=($(sort <<<"${frame_files[*]}"))
