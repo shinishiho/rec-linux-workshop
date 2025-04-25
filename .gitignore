@@ -1,0 +1,18 @@
+# Cache and temporary files
+.cache/
+tmp/
+*.tmp
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Game state files
+progress.state
+card3_locker.pid 

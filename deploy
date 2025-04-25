@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# Check if script is run as root
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root. Please use sudo." >&2
+   exit 1
+fi
+
+# --- Function to encode a string to Base64 ---
+encode_base64() {
+  echo "$1" | base64
+}
+
+# --- Get user input ---
+read -p "Enter the new username: " new_username
+read -p "Enter the 3rd line secret string: " secret_string
+read -s -p "Enter the password for the new user: " user_password
+echo # Add a newline after the silent password input
+
+# --- Validate input ---
+if [ -z "$new_username" ] || [ -z "$secret_string" ] || [ -z "$user_password" ]; then
+  echo "Error: All fields must be provided."
+  exit 1
+fi
+
+# --- Create the new user and home directory ---
+# Use -m to create the home directory
+# Use -s /bin/bash to set the default shell to bash
+if useradd -m -s /bin/fish "$new_username"; then
+  echo "User '$new_username' created successfully."
+else
+  echo "Error: Failed to create user '$new_username'. It might already exist."
+  exit 1
+fi
+
+# --- Set the user's password ---
+echo "$new_username:$user_password" | chpasswd
+if [ $? -eq 0 ]; then
+  echo "Password set successfully for user '$new_username'."
+else
+  echo "Error: Failed to set password for user '$new_username'."
+  # Clean up the created user if password setting fails
+  userdel -r "$new_username"
+  exit 1
+fi
+
+# --- Create standard directories in the new home directory ---
+new_user_home="/home/$new_username"
+mkdir -p "$new_user_home/Documents" \
+         "$new_user_home/Downloads" \
+         "$new_user_home/Music" \
+         "$new_user_home/Pictures" \
+         "$new_user_home/Videos" \
+         "$new_user_home/Public" \
+         "$new_user_home/Templates" \
+         "$new_user_home/.config"
+
+echo "Created standard directories in $new_user_home"
+
+# --- Copy the ~/arisu file ---
+source_file="/home/w/arisugame/arisu"
+destination_file="$new_user_home/arisu"
+
+if [ -f "$source_file" ]; then
+  cp "$source_file" "$destination_file"
+  echo "Copied '$source_file' to '$destination_file'"
+else
+  echo "Warning: Source file '$source_file' not found. Skipping copy."
+fi
+
+# --- Modify the copied file (if it exists) ---
+if [ -f "$destination_file" ]; then
+  # Encode the secret string
+  encoded_secret=$(encode_base64 "$secret_string")
+
+  # Use sed to replace the 3rd line
+  # -i allows inline editing
+  # '3s/BASE64_SECRET=".*"/BASE64_SECRET="'"$encoded_secret"'"/'
+  #   ^  ^ ^           ^                         ^            ^
+  #  Line to modify  s/ Search pattern          / Replacement /
+  # '.*' matches anything between the quotes
+  # "'"$encoded_secret"'" ensures the encoded string is properly quoted
+  sed -i '3s/BASE64_SECRET=".*"/BASE64_SECRET="'"$encoded_secret"'"/' "$destination_file"
+  if [ $? -eq 0 ]; then
+    echo "Updated the 3rd line of '$destination_file' with the encoded secret."
+  else
+    echo "Error: Failed to update the 3rd line of '$destination_file'."
+  fi
+
+  chown -R "$new_username:$new_username" "$new_user_home"
+  echo "Set ownership of '$new_user_home' and its contents to '$new_username'."
+
+
+  chattr +i "$destination_file"
+  if [ $? -eq 0 ]; then
+    echo "Set immutability flag on '$destination_file'."
+  else
+    echo "Error: Failed to set immutability flag on '$destination_file'. You may need to run this script as root or with sufficient privileges."
+  fi
+
+else
+  echo "Skipping permission and immutability setting as the destination file '$destination_file' does not exist."
+fi
+
+echo "Script finished."
+

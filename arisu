@@ -1,0 +1,747 @@
+#!/bin/bash
+
+# Check for required dependencies
+check_dependencies() {
+    local missing_deps=()
+    local deps=("base64" "curl" "ponysay" "img2sixel" "dotacat")
+    
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            missing_deps+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        echo "Error: Missing required dependencies:"
+        printf '  - %s\n' "${missing_deps[@]}"
+        echo "Please install them and try again."
+        exit 1
+    fi
+}
+
+# Trap cleanup on script exit
+cleanup() {
+    local exit_code=$?
+    echo "Cleaning up..."
+    
+    # Kill any remaining card3 locker process
+    if [ -f "$CARD3_PID_FILE" ]; then
+        local pid
+        pid=$(cat "$CARD3_PID_FILE" 2>/dev/null)
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+        rm -f "$CARD3_PID_FILE"
+    fi
+    
+    # Remove temporary files
+    if [ -d "$CACHE_DIR" ]; then
+        rm -rf "$CACHE_DIR"
+    fi
+    
+    # Remove card4 parts if they exist
+    find "$HOME_DIR" -maxdepth 1 -name "*${CARD4_PART1_SUFFIX}" -delete 2>/dev/null
+    find "$HOME_DIR" -maxdepth 1 -name "*${CARD4_PART2_SUFFIX}" -delete 2>/dev/null
+    
+    exit "$exit_code"
+}
+
+# Set up trap
+trap cleanup EXIT INT TERM
+
+# Run dependency check
+check_dependencies
+
+BASE64_SECRET="TmjDoCBjw6FpIMSR4bq/biB04burIEVDRQo="
+
+START_SIGNAL_URL="http://localhost:8000/arisu_game_status"
+
+CARD_NAMES=(
+    "Right Leg of the Forbidden One"
+    "Left Leg of the Forbidden One"
+    "Right Arm of the Forbidden One"
+    "Left Arm of the Forbidden One"
+    "Exodia the Forbidden One"
+)
+HOME_DIR="$HOME"
+TARGET_DIR="$HOME_DIR"
+
+RESOURCE_DIR="/tmp"
+ARISU_NORMAL="$RESOURCE_DIR/arisu.png"
+ARISU_ROOMBA="$RESOURCE_DIR/arisu_roomba.png"
+ARISU_GIF="$RESOURCE_DIR/arisu.gif"  # Directory containing frame PNGs
+ARISU_PONY="$RESOURCE_DIR/arisu.pony"
+CACHE_PARENT_DIR="$HOME/.cache"
+CACHE_DIR="$CACHE_PARENT_DIR/arisu_game"
+GAME_STATE_FILE="$CACHE_DIR/progress.state"
+CARD3_PID_FILE="$CACHE_DIR/card3_locker.pid"
+CARD3_PROCESS_NAME="Người canh gác Exodia"
+
+CARD4_PART1_SUFFIX="_part1"
+CARD4_PART2_SUFFIX="_part2"
+
+# --- Helper Functions ---
+
+# Function to display GIF animation and return when finished
+display_gif_animation() {
+    local frames_dir="$1"
+    local frame_delay=0.016  # ~60fps
+    local frame_width=250
+    local frame_y_pos="$2"  # Get y position from argument
+    
+    # Get list of frame files
+    local frame_files=("$frames_dir"/cropped_processed_frame_*.png)
+    
+    # Sort frames numerically
+    IFS=$'\n' frame_files=($(sort <<<"${frame_files[*]}"))
+    unset IFS
+    
+    # Display frames once
+    for frame in "${frame_files[@]}"; do
+        tput cup "$frame_y_pos" 0
+        img2sixel -w "$frame_width" "$frame"
+        sleep "$frame_delay"
+    done
+
+    # Clear input buffer
+    read -t 0.1 -n 10000 discard 
+}
+
+wait_for_user() {
+  local REPLY
+  local key
+  echo "--- Press Space to continue, Left Arrow to go back ---"
+
+  while true; do
+    read -N 1 -s key
+    if [[ "$key" == $'\x1b' ]]; then
+      read -N 2 -s rest
+      key+="$rest"
+      if [[ "$key" == $'\x1b[D' ]]; then  # Left arrow
+        echo
+        return 1
+      fi
+    elif [[ "$key" == " " || "$key" == "" ]]; then
+      echo
+      return 0
+    fi
+  done
+}
+
+# --- MODIFIED display_dialogue Function ---
+# Accepts the image file path as the FIRST argument.
+# Subsequent arguments are the lines of dialogue.
+display_dialogue() {
+    local image_to_display="$1" # Get the image path from the first argument
+    shift                       # Remove the image path from the argument list ($@)
+
+    # --- Optional: Add validation/fallback ---
+    if [ -z "$image_to_display" ]; then
+        echo "Error: display_dialogue called without an image path." >&2
+        # Fallback to the default image if none was provided
+        image_to_display="$ARISU_NORMAL"
+    elif [ ! -f "$image_to_display" ] && [ ! -d "$image_to_display" ]; then
+        echo "Warning: Image file/directory not found: '$image_to_display'. Using default." >&2
+        # Fallback if the provided file doesn't exist
+        image_to_display="$ARISU_NORMAL"
+    fi
+
+    local -a lines=("$@")  # Store all lines in an array
+    local current_index=0
+    local total_lines=${#lines[@]}
+
+    while [ $current_index -lt $total_lines ]; do
+        clear
+        # Calculate y position based on ponysay output lines
+        local ponysay_output
+        ponysay_output=$(echo "${lines[$current_index]}" | PYTHONWARNINGS=ignore ponysay -f "$ARISU_PONY" | dotacat)
+        local y_pos
+        y_pos=$(echo "$ponysay_output" | wc -l)
+        echo "$ponysay_output"
+        
+        if [[ "$image_to_display" == "$ARISU_GIF" ]]; then
+            # Play the GIF animation once and wait for it to finish
+            display_gif_animation "$ARISU_GIF" "$y_pos"
+            
+            if wait_for_user; then
+                ((current_index++))
+            else
+                if [ $current_index -gt 0 ]; then
+                    ((current_index--))
+                fi
+            fi
+        else
+            img2sixel -w 200 "$image_to_display"
+            
+            if wait_for_user; then
+                ((current_index++))
+            else
+                if [ $current_index -gt 0 ]; then
+                    ((current_index--))
+                fi
+            fi
+        fi
+    done
+}
+# --- END MODIFIED display_dialogue Function ---
+
+
+ensure_cache_dir() {
+    if [ ! -d "$CACHE_DIR" ]; then
+        mkdir -p "$CACHE_DIR"
+        if [ $? -ne 0 ]; then
+            # Use the modified function, providing the default image path
+            display_dialogue "$ARISU_NORMAL" "Error: Could not create cache directory '$CACHE_DIR'." "Please check permissions for '$CACHE_PARENT_DIR'."
+            exit 1
+        fi
+    fi
+}
+
+check_start_signal() {
+    # Use the modified function, providing the default image path
+    display_dialogue "$ARISU_NORMAL" "..."
+    local http_status
+    http_status=$(curl --connect-timeout 5 -s -o /dev/null -w "%{http_code}" "$START_SIGNAL_URL")
+    local curl_exit_code=$?
+
+    if [ $curl_exit_code -ne 0 ]; then
+        # Use the modified function, providing the default image path
+        display_dialogue "$ARISU_NORMAL" "..."
+        exit 1
+    fi
+
+    if [ "$http_status" != "200" ]; then
+        # Use the modified function, providing the default image path
+        display_dialogue "$ARISU_NORMAL" "..."
+        exit 1
+    fi
+    # Use the modified function, providing the default image path
+    display_dialogue "$ARISU_NORMAL" "Người anh em, hãy tin tưởng vào những lá bài!"
+}
+
+get_game_state() {
+    ensure_cache_dir
+    if [ -f "$GAME_STATE_FILE" ]; then
+        local state
+        state=$(cat "$GAME_STATE_FILE")
+        if [[ "$state" =~ ^[0-5]$ ]]; then
+            echo "$state"
+        else
+            echo 0
+        fi
+    else
+        echo 0
+    fi
+}
+
+set_game_state() {
+    ensure_cache_dir
+    local stage=$1
+    echo "$stage" > "$GAME_STATE_FILE"
+    if [ $? -ne 0 ]; then
+        # Use the modified function, providing the default image path
+        display_dialogue "$ARISU_NORMAL" "Uh oh, I couldn't save your progress in '$GAME_STATE_FILE'." "Check permissions?"
+        exit 1
+    fi
+}
+
+# Function to find a random *writable* subdirectory in HOME (excluding hidden ones)
+find_random_subdir() {
+    local random_dir
+    # Find non-hidden, writable directories directly under HOME, shuffle, pick one
+    random_dir=$(find "$HOME_DIR" -maxdepth 1 -mindepth 1 -type d -not -path '*/.*' -writable -print0 2>/dev/null | shuf -z -n 1 | xargs -0 echo)
+
+    # Fallback if -writable failed or no dirs found
+    if [ -z "$random_dir" ]; then
+        random_dir=$(find "$HOME_DIR" -maxdepth 1 -mindepth 1 -type d -not -path '*/.*' -print0 | shuf -z -n 1 | xargs -0 echo)
+        # Test writability after finding
+        if [ -z "$random_dir" ] || [ ! -d "$random_dir" ] || [ ! -w "$random_dir" ]; then
+            # Last resort: HOME itself
+            if [ -w "$HOME_DIR" ]; then
+                random_dir="$HOME_DIR"
+            else
+                # Use the modified function, providing the default image path
+                display_dialogue "$ARISU_NORMAL" "I can't seem to find a place to put the card... Not even in '$HOME_DIR'." "Check permissions."
+                exit 1
+            fi
+        fi
+    fi
+    echo "$random_dir"
+}
+
+
+# Function to split the *encoded* secret into card contents
+split_encoded_secret() {
+    local encoded_secret="$BASE64_SECRET"
+    local secret_len
+    local chunk_size
+    local remainder
+    local start=1
+    local len
+
+    if [ -z "$encoded_secret" ]; then
+        # Use the modified function, providing the default image path
+        display_dialogue "$ARISU_NORMAL" "Error: The Base64 secret is empty."
+        exit 1
+    fi
+
+    secret_len=$(echo -n "$encoded_secret" | wc -c)
+    # Ensure chunk_size is at least 1 if secret_len > 0
+    if [ "$secret_len" -eq 0 ]; then
+        # Use the modified function, providing the default image path
+        display_dialogue "$ARISU_NORMAL" "Error: Base64 secret has zero length."
+        exit 1
+    elif [ "$secret_len" -lt 5 ]; then
+         # Use the modified function, providing the default image path
+         display_dialogue "$ARISU_NORMAL" "Warning: Base64 secret is very short (< 5 chars). Splitting might be trivial."
+         chunk_size=1
+         remainder=0 # Handled below
+    else
+        chunk_size=$((secret_len / 5))
+        remainder=$((secret_len % 5))
+    fi
+
+
+    declare -g CARD_CONTENTS_ENCODED=() # Global array for encoded parts
+    for i in {0..4}; do
+        if [ "$secret_len" -lt 5 ]; then
+            # Special handling for very short secrets
+            if [ $start -le $secret_len ]; then
+                if [ $i -eq 4 ]; then # Last card gets the rest
+                   len=$((secret_len - start + 1))
+                else
+                   len=1
+                fi
+            else
+                len=0 # No more characters left
+            fi
+        else
+            # Normal logic
+            len=$chunk_size
+            if [ $remainder -gt 0 ]; then
+                len=$((chunk_size + 1))
+                remainder=$((remainder - 1))
+            fi
+        fi
+
+        if [ $len -gt 0 ]; then
+            CARD_CONTENTS_ENCODED+=("$(echo -n "$encoded_secret" | cut -c ${start}-$((start + len - 1)) )")
+            start=$((start + len))
+        else
+             CARD_CONTENTS_ENCODED+=("") # Add empty string if no content left
+        fi
+    done
+
+    if [ ${#CARD_CONTENTS_ENCODED[@]} -ne 5 ]; then
+        # Use the modified function, providing the default image path
+        display_dialogue "$ARISU_NORMAL" "Error: Failed to split the encoded secret into exactly 5 parts."
+        exit 1
+    fi
+}
+
+# --- Main Game Logic ---
+
+# Get state *first*
+CURRENT_STAGE=$(get_game_state)
+
+# Split the secret (needed regardless of stage for checks/placements)
+split_encoded_secret
+
+# --- IMPORTANT: Update all calls to display_dialogue below ---
+# --- Pass the desired image variable as the FIRST argument ---
+
+case $CURRENT_STAGE in
+    0) # Initial state, check signal *then* place Card 1
+        # --- Check Start Signal ONLY for Stage 0 ---
+        check_start_signal # Uncomment when URL is ready
+        # --- Signal OK ---
+
+        CARD_INDEX=0
+        CARD_NAME="${CARD_NAMES[$CARD_INDEX]}"
+        CARD_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD_INDEX]}"
+        RANDOM_DIR=$(find_random_subdir)
+        CARD_PATH="$RANDOM_DIR/$CARD_NAME"
+
+        echo -n "$CARD_CONTENT_ENC" > "$CARD_PATH"
+        if [ $? -ne 0 ]; then
+            display_dialogue "$ARISU_NORMAL" "Oops! I couldn't place the first card in '$RANDOM_DIR'." "Permissions?"
+            exit 1
+        fi
+
+        # Example: Use the default image here
+        display_dialogue "$ARISU_NORMAL" \
+            "Người anh em, hãy giúp Arisu trở thành thủ lĩnh của những lá bài!"	\
+            "Hãy giúp Arisu thu thập 5 lá bài EXODIAAA!" \
+            "Lá bài đầu tiên, '$CARD_NAME', được giấu trong một thư mục nào đó trong ~/" \
+            "Hãy dùng 'ls' để tìm nó, dùng 'cat' để kiểm tra lá bài, và di chuyển vào ~/" \
+            "Hãy gọi Arisu sau khi thực hiện xong."
+
+        set_game_state 1
+        ;;
+
+    1) # Check Card 1, place Card 2 (hidden)
+        CARD_INDEX=0
+        EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD_INDEX]}"
+        EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD_INDEX]}"
+
+        if [ -f "$EXPECTED_PATH" ] && [ "$(cat "$EXPECTED_PATH")" == "$EXPECTED_CONTENT_ENC" ]; then
+            # --- Card 1 Correct ---
+            CARD_INDEX=1 # Card 2
+            CARD_NAME="${CARD_NAMES[$CARD_INDEX]}"
+            CARD_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD_INDEX]}"
+            RANDOM_DIR=$(find_random_subdir)
+            CARD_PATH="$RANDOM_DIR/.$CARD_NAME" # Hidden
+
+            echo -n "$CARD_CONTENT_ENC" > "$CARD_PATH"
+             if [ $? -ne 0 ]; then
+                display_dialogue "$ARISU_NORMAL" "Oh dear, I couldn't place the second card in '$RANDOM_DIR'." "Permissions?"
+                exit 1
+            fi
+
+            # Example: Use the default image here
+            display_dialogue "$ARISU_NORMAL" \
+                "Lá bài thứ 2, '$CARD_NAME', là một lá bài ẩn." \
+                "Dùng 'ls' sẽ không tìm thấy. Hãy dùng cách khác." \
+                "Hãy di chuyển vào ~/ sau khi tìm thấy."
+
+            set_game_state 2
+        else
+            # --- Card 1 Incorrect ---
+            # Example: Use the default image here
+            display_dialogue "$ARISU_NORMAL" \
+                "Người anh em, hãy cố gắng tìm kiếm lá bài!" \
+                "Lá bài đầu tiên được giấu trong một thư mục nào đó trong ~/" \
+                "Hãy dùng 'ls' để tìm nó, dùng 'cat' để kiểm tra lá bài, và di chuyển vào ~/" \
+                "Hãy gọi Arisu sau khi thực hiện xong."
+        fi
+        ;;
+
+    2) # Check Card 1 & 2, place Card 3 (permissions)
+        CARD1_INDEX=0
+        CARD1_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD1_INDEX]}"
+        CARD1_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD1_INDEX]}"
+        CARD2_INDEX=1
+        CARD2_EXPECTED_PATH="$TARGET_DIR/.${CARD_NAMES[$CARD2_INDEX]}" # Hidden
+        CARD2_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD2_INDEX]}"
+
+        if ! [ -f "$CARD1_EXPECTED_PATH" ] || ! [ "$(cat "$CARD1_EXPECTED_PATH")" == "$CARD1_EXPECTED_CONTENT_ENC" ]; then
+            display_dialogue "$ARISU_NORMAL" "Lá bài '${CARD_NAMES[0]}' đã bị hỏng!"
+            exit 0
+        fi
+
+        # --- Cards 2 Incorrect ---
+        if ! [ -f "$CARD2_EXPECTED_PATH" ] || ! [ "$(cat "$CARD2_EXPECTED_PATH")" == "$CARD2_EXPECTED_CONTENT_ENC" ]; then
+            display_dialogue "$ARISU_NORMAL" \
+                "Lá bài '${CARD_NAMES[1]}' chưa được tìm thấy!" \
+		"Nó là một lá bài ẩn, vì vậy hãy dùng lệnh 'ls -a'." \
+                "Hãy di chuyển lá bài vào ~/ và giữ nguyên tên lá bài!"
+            exit 0
+        fi
+
+        # --- Cards 1 & 2 Correct ---
+        CARD_INDEX=2 # Card 3
+        CARD_NAME="${CARD_NAMES[$CARD_INDEX]}"
+        CARD_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD_INDEX]}"
+        RANDOM_DIR=$(find_random_subdir)
+        CARD_PATH="$RANDOM_DIR/$CARD_NAME"
+
+        # Create the card file first
+        echo -n "$CARD_CONTENT_ENC" > "$CARD_PATH"
+        if [ $? -ne 0 ]; then
+            display_dialogue "$ARISU_NORMAL" "Failed to place the third card in '$RANDOM_DIR'." "Check write permissions."
+            exit 1
+        fi
+
+        # Start a simple background sleep process
+        (bash -c "exec -a '$CARD3_PROCESS_NAME' sleep 3600" & echo $! > "$CARD3_PID_FILE.tmp" && mv "$CARD3_PID_FILE.tmp" "$CARD3_PID_FILE") & # Run the sleep and PID writing in background subshell
+        sleep 0.2 # Give a brief moment for the background process to start and write the PID file
+
+        # Check if PID file was created
+        ensure_cache_dir # Ensure cache dir exists
+        if [ ! -f "$CARD3_PID_FILE" ]; then
+            display_dialogue "$ARISU_NORMAL" "Uh oh! Failed to start the locking process or record its PID." \
+                             "Maybe permissions issue in '$CACHE_DIR'?" \
+                             "Please manually remove '$CARD_PATH' if it exists and try again."
+            rm -f "$CARD_PATH" # Attempt cleanup
+            exit 1
+        fi
+
+        LOCKER_PID=$(cat "$CARD3_PID_FILE")
+        # Verify the process is actually running
+        if ! ps -p "$LOCKER_PID" > /dev/null; then
+             display_dialogue "$ARISU_NORMAL" "Uh oh! The locking process (PID $LOCKER_PID) seems to have failed immediately." \
+                              "Please manually remove '$CARD_PATH' and '$CARD3_PID_FILE' and try again."
+             rm -f "$CARD_PATH" "$CARD3_PID_FILE" # Attempt cleanup
+             exit 1
+        fi
+
+        # Now, set permissions to 000
+        chmod 000 "$CARD_PATH"
+        if [ $? -ne 0 ]; then
+            display_dialogue "$ARISU_NORMAL" "Failed to set permissions (000) on '$CARD_PATH'." \
+                             "This is unexpected. Check permissions in '$RANDOM_DIR'." \
+                             "Stopping the locking process (PID $LOCKER_PID) and cleaning up."
+            kill "$LOCKER_PID" 2>/dev/null # Attempt to kill the sleep process
+            rm -f "$CARD_PATH" "$CARD3_PID_FILE" # Attempt cleanup
+            exit 1
+        fi
+
+        # Example: Use the default image here
+        display_dialogue "$ARISU_NORMAL" \
+            "Người anh em! Chúng ta đã tìm được 2 lá bài!" \
+            "Lá bài tiếp theo, '${CARD_NAME}', nằm trong '$RANDOM_DIR'." \
+            "Nhưng nó được canh gác bởi một chương trình bí ẩn." \
+            "Người anh em sẽ không thể đọc nội dung của lá bài nếu chương trình này không bị tiêu diệt." \
+            "Hãy tìm chương trình đó và dùng 'kill', sau đó di chuyển lá bài vào ~/" \
+            "Có lẽ chương trình đó có liên quan đến Exodia"
+
+        set_game_state 3
+        ;;
+
+    3) # Check Card 1, 2, 3 (and check/fix permissions), place Card 4 (split)
+        CARD1_INDEX=0
+        CARD1_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD1_INDEX]}"
+        CARD1_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD1_INDEX]}"
+        CARD2_INDEX=1
+        CARD2_EXPECTED_PATH="$TARGET_DIR/.${CARD_NAMES[$CARD2_INDEX]}"
+        CARD2_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD2_INDEX]}"
+        CARD3_INDEX=2
+        CARD3_NAME="${CARD_NAMES[$CARD3_INDEX]}"
+        CARD3_EXPECTED_PATH="$TARGET_DIR/$CARD3_NAME" # Expected final location
+        CARD3_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD3_INDEX]}"
+
+        # Check Cards 1 & 2 first
+        if ! [ -f "$CARD1_EXPECTED_PATH" ] || ! [ "$(cat "$CARD1_EXPECTED_PATH")" == "$CARD1_EXPECTED_CONTENT_ENC" ]; then
+            display_dialogue "$ARISU_NORMAL" "Có gì đó không đúng với lá bài '${CARD_NAMES[0]}'!"
+            exit 0
+        fi
+        if ! [ -f "$CARD2_EXPECTED_PATH" ] || ! [ "$(cat "$CARD2_EXPECTED_PATH")" == "$CARD2_EXPECTED_CONTENT_ENC" ]; then
+            display_dialogue "$ARISU_NORMAL" "Có gì đó không đúng với lá bài '${CARD_NAMES[1]}'!"
+            exit 0
+        fi
+
+        # --- Check Card 3 ---
+        if [ ! -f "$CARD3_EXPECTED_PATH" ]; then
+             display_dialogue "$ARISU_NORMAL" "Người anh em hãy di chuyển lá bài '${CARD3_NAME}' vào '$TARGET_DIR'."
+             exit 0
+        fi
+
+        ensure_cache_dir
+        if [ -f "$CARD3_PID_FILE" ]; then
+            LOCKER_PID=$(cat "$CARD3_PID_FILE")
+            if ! [[ "$LOCKER_PID" =~ ^[0-9]+$ ]]; then
+                 display_dialogue "$ARISU_NORMAL" "The PID file '$CARD3_PID_FILE' contains invalid data ('$LOCKER_PID')." \
+                                  "Something is wrong. Please remove '$CARD3_PID_FILE' and try killing any 'sleep 3600' process manually."
+                 exit 1
+            fi
+
+            if ps -p "$LOCKER_PID" > /dev/null; then
+                 # Example: Use the ROOMBA image when the card is locked
+                 display_dialogue "$ARISU_ROOMBA" \
+                                  "Lá bài vẫn đang bị chiếm giữ!" \
+                                  "Hãy tìm và tiêu diệt chương trình có tên '$CARD3_PROCESS_NAME'"
+                 exit 0
+            else
+                 display_dialogue "$ARISU_NORMAL" "[Chương trình có PID $LOCKER_PID đã được loại bỏ! Tiến hành mở khóa lá bài...]"
+                 chmod 644 "$CARD3_EXPECTED_PATH" # Set readable permissions
+                 if [ $? -ne 0 ]; then
+                      display_dialogue "$ARISU_NORMAL" "Hmm, I couldn't change permissions on '$CARD3_EXPECTED_PATH' even after the process was stopped." \
+                                       "Check if you own the file and have permissions in '$TARGET_DIR'." \
+                                       "You might need to fix permissions manually: 'chmod 644 \"$CARD3_EXPECTED_PATH\"'"
+                      exit 1
+                 fi
+                 rm -f "$CARD3_PID_FILE" # Remove the PID file as it's no longer needed
+                 display_dialogue "$ARISU_NORMAL" "[Lá bài '$CARD3_NAME' được mở khóa thành công!]"
+            fi
+        fi
+
+        # 3. Check Card 3 Content (now that it should be readable)
+        if ! [ -r "$CARD3_EXPECTED_PATH" ]; then
+             display_dialogue "$ARISU_NORMAL" "Even though the process seems gone, I still can't read '$CARD3_EXPECTED_PATH'." \
+                              "Please check its permissions manually (e.g., 'ls -l \"$CARD3_EXPECTED_PATH\"')." \
+                              "Try setting them with 'chmod 644 \"$CARD3_EXPECTED_PATH\"'."
+             exit 0
+        elif ! [ "$(cat "$CARD3_EXPECTED_PATH")" == "$CARD3_EXPECTED_CONTENT_ENC" ]; then
+             display_dialogue "$ARISU_NORMAL" "Nội dung của lá bài '${CARD3_NAME}' đã bị lỗi!"
+             exit 0
+        fi
+
+        # --- Cards 1, 2 & 3 Correct ---
+        display_dialogue "$ARISU_NORMAL" "Thật tuyệt vời người anh em! Lá bài đã an toàn!"
+
+        # --- Place Card 4 (Split) ---
+        CARD_INDEX=3 # Card 4
+        CARD_NAME="${CARD_NAMES[$CARD_INDEX]}"
+        CARD_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD_INDEX]}"
+        RANDOM_DIR=$(find_random_subdir)
+
+        content_len=$(echo -n "$CARD_CONTENT_ENC" | wc -c)
+        part1_len=$((content_len / 2))
+        part1_len=$(( part1_len > 0 ? part1_len : (content_len > 0 ? 1 : 0) ))
+
+        part1_content_enc=""
+        part2_content_enc=""
+        if [ $part1_len -gt 0 ]; then
+            part1_content_enc=$(echo -n "$CARD_CONTENT_ENC" | head -c $part1_len)
+            part2_content_enc=$(echo -n "$CARD_CONTENT_ENC" | tail -c +$((part1_len + 1)))
+        fi
+
+        CARD_PATH_P1="$RANDOM_DIR/${CARD_NAME}${CARD4_PART1_SUFFIX}"
+        CARD_PATH_P2="$RANDOM_DIR/${CARD_NAME}${CARD4_PART2_SUFFIX}"
+
+        printf "%s" "$part1_content_enc" > "$CARD_PATH_P1"
+        printf "%s" "$part2_content_enc" > "$CARD_PATH_P2"
+
+        if [ $? -ne 0 ] || [ ! -f "$CARD_PATH_P1" ] || [ ! -f "$CARD_PATH_P2" ]; then
+            display_dialogue "$ARISU_NORMAL" "Error placing the two parts of the fourth card in '$RANDOM_DIR'."
+            rm -f "$CARD_PATH_P1" "$CARD_PATH_P2" # Attempt cleanup
+            exit 1
+        fi
+
+        # Example: Use the default image here
+        display_dialogue "$ARISU_NORMAL" \
+            "Lá bài '${CARD_NAME}' bị chia thành 2 mảnh." \
+            "Các mảnh đó đang ở trong thư mục '$RANDOM_DIR'." \
+            "Hãy dùng 'cat' và kĩ thuật output redirection để ghép thành lá bài hoàn chỉnh." \
+            "Di chuyển vào ~/ sau khi hoàn tất"
+
+        set_game_state 4
+        ;;
+
+    4) # Check Cards 1-4 (combined), prompt for Card 5 (summon)
+        CARD1_INDEX=0
+        CARD1_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD1_INDEX]}"
+        CARD1_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD1_INDEX]}"
+        CARD2_INDEX=1
+        CARD2_EXPECTED_PATH="$TARGET_DIR/.${CARD_NAMES[$CARD2_INDEX]}"
+        CARD2_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD2_INDEX]}"
+        CARD3_INDEX=2
+        CARD3_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD3_INDEX]}"
+        CARD3_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD3_INDEX]}"
+        CARD4_INDEX=3
+        CARD4_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD4_INDEX]}"
+        CARD4_EXPECTED_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD4_INDEX]}" # Full encoded content
+
+        if ! [ -f "$CARD1_EXPECTED_PATH" ] || ! [ -f "$CARD2_EXPECTED_PATH" ] || ! [ -r "$CARD3_EXPECTED_PATH" ]; then
+             display_dialogue "$ARISU_NORMAL" "Người anh em, các lá bài đã bị thất lạc khỏi '$TARGET_DIR'."
+             exit 0
+        fi
+        if ! [ -r "$CARD3_EXPECTED_PATH" ]; then
+             display_dialogue "$ARISU_NORMAL" "Lá bài '${CARD_NAMES[2]}' đã bị khóa!"
+             exit 0
+        fi
+
+        if ! [ -f "$CARD4_EXPECTED_PATH" ]; then
+             display_dialogue "$ARISU_NORMAL" \
+                "Lá bài '${CARD_NAMES[3]}' chưa hoàn chỉnh."
+             exit 0
+        elif ! cmp -s "$CARD4_EXPECTED_PATH" <(printf "%s" "$CARD4_EXPECTED_CONTENT_ENC"); then
+             display_dialogue "$ARISU_NORMAL" \
+                "Lá bài '${CARD_NAMES[3]}' chưa hoàn chỉnh." \
+                "Người anh em, hãy ghép hai mảnh của lá bài theo đúng thứ tự!" \
+		"Dùng lệnh 'cat [mảnh_1] [mảnh_2] > [vị trí lá bài cần đặt]'"
+             exit 0
+        fi
+
+        # --- Cards 1, 2, 3 & 4 Correct ---
+        CARD_INDEX=4 # Card 5
+        CARD_NAME="${CARD_NAMES[$CARD_INDEX]}" # Exodia the Forbidden One
+
+        # Example: Use the default image here
+        display_dialogue "$ARISU_NORMAL" \
+            "Người anh em, hãy triệu hồi lá bài cuối cùng: '${CARD_NAME}'!" \
+            "Hãy tạo một file mới có tên 'summon' trong thư mục ~/" \
+            "... và viết tên đầy đủ của lá bài vào đó."
+
+        set_game_state 5
+        ;;
+
+    5) # Check Cards 1-4, check 'summon' file, place Card 5, finish game
+        CARD1_INDEX=0
+        CARD1_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD1_INDEX]}"
+        CARD2_INDEX=1
+        CARD2_EXPECTED_PATH="$TARGET_DIR/.${CARD_NAMES[$CARD2_INDEX]}"
+        CARD3_INDEX=2
+        CARD3_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD3_INDEX]}"
+        CARD4_INDEX=3
+        CARD4_EXPECTED_PATH="$TARGET_DIR/${CARD_NAMES[$CARD4_INDEX]}"
+        CARD5_INDEX=4
+        CARD5_NAME="${CARD_NAMES[$CARD5_INDEX]}"
+        CARD5_CONTENT_ENC="${CARD_CONTENTS_ENCODED[$CARD5_INDEX]}" # Encoded content
+        CARD5_FINAL_PATH="$TARGET_DIR/$CARD5_NAME"
+        SUMMON_FILE="$TARGET_DIR/summon"
+
+        if ! [ -f "$CARD1_EXPECTED_PATH" ] || \
+           ! [ -f "$CARD2_EXPECTED_PATH" ] || \
+           ! [ -r "$CARD3_EXPECTED_PATH" ] || \
+           ! [ -f "$CARD4_EXPECTED_PATH" ]; then
+             display_dialogue "$ARISU_NORMAL" "Các lá bài trước đó đã biến mất!" \
+             "Người anh em hãy kiểm tra '$TARGET_DIR'!"
+             exit 0
+        fi
+
+        if ! [ -f "$SUMMON_FILE" ]; then
+            display_dialogue "$ARISU_NORMAL" "Hãy tạo file summon trong '$TARGET_DIR'."
+            exit 0
+        elif ! grep -qxi "$CARD5_NAME" <(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$SUMMON_FILE"); then
+            display_dialogue "$ARISU_NORMAL" \
+                "Hãy ghi đúng tên của lá bài trong file 'summon'!" \
+                "Tên của lá bài là: '$CARD5_NAME'."
+            exit 0
+        fi
+
+        # --- Summoning Conditions Met ---
+        display_dialogue "$ARISU_NORMAL" "Lá bài đã được triệu hồi!"
+
+        printf "%s" "$CARD5_CONTENT_ENC" > "$CARD5_FINAL_PATH"
+        if [ $? -ne 0 ]; then
+            display_dialogue "$ARISU_NORMAL" "Oh no! Couldn't write the final piece to '$CARD5_FINAL_PATH'." \
+                             "Check permissions in '$TARGET_DIR'?"
+            exit 1
+        fi
+
+        CAT_CMD="cat"
+        CAT_CMD+=" \"$TARGET_DIR/${CARD_NAMES[0]}\""
+        CAT_CMD+=" \"$TARGET_DIR/.${CARD_NAMES[1]}\"" # Hidden card
+        CAT_CMD+=" \"$TARGET_DIR/${CARD_NAMES[2]}\""
+        CAT_CMD+=" \"$TARGET_DIR/${CARD_NAMES[3]}\""
+        CAT_CMD+=" \"$TARGET_DIR/${CARD_NAMES[4]}\""
+        CAT_CMD+=" | base64 -d"
+
+        # Example: Use the GIF for the final celebration!
+        display_dialogue "$ARISU_GIF" \
+            "EEEEEXX..." \
+            "XXOOOOO..." \
+            "DDIIII..." \
+            "IAAAAAAAAAA!!!" \
+            "Người anh em! Arisu cảm ơn người anh em đã giúp Arisu làm thủ lĩnh của những lá bài!" \
+            "Hãy sao chép và chạy lệnh sau khi dọn dẹp để nhận món quà của Arisu!" \
+            "Hẹn gặp lại người anh em!"
+
+        # --- Cleanup ---
+        # Example: Use the ROOMBA for cleaning up
+        display_dialogue "$ARISU_ROOMBA" "[Dọn dẹp dọn dẹp]"
+        rm -f "$SUMMON_FILE" # Remove summon file first
+        if [ -d "$CACHE_DIR" ]; then
+            rm -rf "$CACHE_DIR"
+            display_dialogue "$ARISU_ROOMBA" "[Đã dọn dẹp thư mục tạm thời: $CACHE_DIR]"
+        fi
+        find "$HOME_DIR" -maxdepth 1 -name "${CARD_NAMES[3]}*${CARD4_PART1_SUFFIX}" -delete 2>/dev/null
+        find "$HOME_DIR" -maxdepth 1 -name "${CARD_NAMES[3]}*${CARD4_PART2_SUFFIX}" -delete 2>/dev/null
+
+        echo "$CAT_CMD"
+
+        set_game_state 0 # Reset state
+        exit 0
+        ;;
+
+    *) # Invalid state
+        display_dialogue "$ARISU_NORMAL" "Người anh em, hãy bắt đầu lại nào!"
+        if [ -d "$CACHE_DIR" ]; then rm -rf "$CACHE_DIR"; fi
+        ensure_cache_dir
+        set_game_state 0
+        exit 1
+        ;;
+esac
+
+exit 0
