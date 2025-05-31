@@ -207,13 +207,13 @@ check_start_signal() {
     if [ $curl_exit_code -ne 0 ]; then
         # Use the modified function, providing the default image path
         display_dialogue "$ARISU_NORMAL" "..."
-        exit 1
+        #exit 1
     fi
 
     if [ "$http_status" != "200" ]; then
         # Use the modified function, providing the default image path
         display_dialogue "$ARISU_NORMAL" "..."
-        exit 1
+        #exit 1
     fi
     # Use the modified function, providing the default image path
     display_dialogue "$ARISU_NORMAL" "Người anh em, hãy tin tưởng vào những lá bài!"
