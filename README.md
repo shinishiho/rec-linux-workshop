@@ -36,17 +36,29 @@ During the Arisu Game, players will practice and learn the following Linux comma
 
 ## Requirements
 
-- Fish shell (I chose fish because it has autosuggestion by default)
-- Dependencies: `base64`, `curl`, `ponysay`, `img2sixel`, `dotacat`
+- `fish` shell (I chose fish because it has autosuggestion by default)
+- Dependencies: `base64`, `curl`, `ponysay`, `libsixel`, `dotacat`
 - For the users: [terminal that suapports sixel](https://arewesixelyet.com) (like Windows Terminal).
 
 ## So you want to try?
+
+### Linux
 
 1. Ensure the requirements.
 2. Clone the repo (or download as zip and extract), then `cd` into it.
 3. Run `deploy` script. Usage: `./scripts/deploy <username> <secret_string>`. It is not recommended to try as the current user, since it will mess up your home folder.
 4. Login as the new user and run `./arisu` on `~/`.
 5. Run `cleanup` script after finish. Usage: `./script/cleanup <username>`.
+
+### WSL
+
+1. Install [Arch-WSL](https://apps.microsoft.com/detail/9MZNMNKSM73X?hl=en-us&gl=US).
+2. Same as above.
+3. Install [yay](https://github.com/Jguer/yay), then all dependencies mentioned above with `yay -Sy [packagename]` (no bracket).
+4. Same as step 3 of the previous section.
+5. Run `su - [username]` to login to the newly created user account from `deploy` script (without bracket).
+6. Run `./arisu`
+7. Cleanup like step 5 from above.
 
 ## Acknowledge
 
